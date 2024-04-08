@@ -16,7 +16,9 @@ func Auth(database *db.UserDB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		session := sessions.Default(c)
 		user := session.Get("user")
-		var savedUser *db.User
+		var data *UserLDAPData
+		var err error
+		var ok bool
 		if user == nil {
 			if c.GetHeader("Authorization") == "" {
 				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
@@ -40,7 +42,7 @@ func Auth(database *db.UserDB) gin.HandlerFunc {
 				})
 				return
 			}
-			ok, data, err := AuthUsingLDAP(pair[0], pair[1])
+			ok, data, err = AuthUsingLDAP(pair[0], pair[1])
 			if !ok {
 				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
 					"message": "unauthorized [ldap incorrect]",
@@ -54,22 +56,6 @@ func Auth(database *db.UserDB) gin.HandlerFunc {
 				return
 			}
 
-			savedUser, err = db.Get(database, data.Name)
-			if err == sql.ErrNoRows {
-				if err := db.Add(database, data.Name, data.FullName, data.Email); err != nil {
-					c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
-						"message": "unauthorized [add user error]",
-					})
-					return
-				}
-				savedUser, err = db.Get(database, data.Name)
-			}
-			if err != nil {
-				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
-					"message": "unauthorized [get user error]",
-				})
-				return
-			}
 		} else {
 			var userSession db.User
 			err := json.Unmarshal([]byte(user.(string)), &userSession)
@@ -80,14 +66,36 @@ func Auth(database *db.UserDB) gin.HandlerFunc {
 				return
 			}
 
-			savedUser, err = db.Get(database, userSession.Username)
-			if err != nil {
+			ok, data, err = AuthUsingLDAP(userSession.Username, "password") // IF DN with no password is allow use this function `ok, data, err = AuthUsingLDAPPasswordless(userSession.Username)`
+			if !ok {
 				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
-					"message": "unauthorized [get user error]",
-					"errors":  err.Error(),
+					"message": "unauthorized [ldap incorrect]",
 				})
 				return
 			}
+			if err != nil {
+				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+					"message": "unauthorized [ldap error]",
+				})
+				return
+			}
+		}
+
+		savedUser, err := db.Get(database, data.Name)
+		if err == sql.ErrNoRows {
+			if err := db.Add(database, data.Name, data.FullName, data.Email); err != nil {
+				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+					"message": "unauthorized [add user error]",
+				})
+				return
+			}
+			savedUser, err = db.Get(database, data.Name)
+		}
+		if err != nil {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+				"message": "unauthorized [get user error]",
+			})
+			return
 		}
 		// Set Session
 		userData, _ := json.Marshal(savedUser)
